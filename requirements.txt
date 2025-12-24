@@ -1,0 +1,8 @@
+mlx
+mlx-vlm
+fastapi
+uvicorn
+pillow
+together>=2.0.0b0
+groq
+timm
