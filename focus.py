@@ -1,9 +1,11 @@
 import json
 import logging
+import os
 import re
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
@@ -20,7 +22,33 @@ if not logger.handlers:
 logger.setLevel(LOG_LEVEL)
 logger.propagate = False
 
-TOGETHER_API_KEY = "together.ai api key"
+ROOT = Path(__file__).resolve().parent
+
+
+def _load_dotenv():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
 TOGETHER_MODEL = "google/gemma-3n-E4B-it"
 MAX_TOKENS = 48
 TOGETHER_SYSTEM_PROMPT = "Only respond in JSON."
@@ -71,8 +99,8 @@ def _init_client():
     global client
     if client is not None:
         return
-    if not TOGETHER_API_KEY or TOGETHER_API_KEY == "PASTE_TOGETHER_API_KEY":
-        raise RuntimeError("Set TOGETHER_API_KEY in focus.py.")
+    if not TOGETHER_API_KEY:
+        raise RuntimeError("Set TOGETHER_API_KEY in .env or the environment.")
     client = Together(api_key=TOGETHER_API_KEY)
     logger.info("Using Together model %s", TOGETHER_MODEL)
 
@@ -267,9 +295,10 @@ def config():
 def analyze(req: ImageRequest):
     global _last_result
     if not _lock.acquire(blocking=False):
-        logger.debug("Analyze skipped (busy); returning stale result")
         if _last_result:
+            logger.info("Analyze skipped (busy); returning stale result")
             return {**_last_result, "stale": True}
+        logger.info("Analyze skipped (busy); no cached result")
         return {"label": "BUSY", "reason": "busy", "detail": "model busy", "stale": True}
     try:
         result = _analyze_together(req.image)
@@ -416,6 +445,8 @@ INDEX_HTML = """<!doctype html>
         font-weight: 700;
         margin-top: 6px;
       }
+      .metric .value.stale { color: var(--danger); }
+      .metric .value.live { color: var(--success); }
       .controls {
         display: grid;
         gap: 12px;
@@ -497,6 +528,10 @@ INDEX_HTML = """<!doctype html>
             <div class="label">Reason</div>
             <div id="reason" class="value">--</div>
           </div>
+          <div class="metric">
+            <div class="label">Freshness</div>
+            <div id="freshness" class="value">--</div>
+          </div>
         </div>
         <div class="reason" id="detail">Waiting for camera...</div>
       </section>
@@ -525,6 +560,7 @@ INDEX_HTML = """<!doctype html>
       const statusEl = document.getElementById("status");
       const reasonEl = document.getElementById("reason");
       const detailEl = document.getElementById("detail");
+      const freshnessEl = document.getElementById("freshness");
       const intervalInput = document.getElementById("interval");
       const intervalVal = document.getElementById("interval-val");
       const latencyEl = document.getElementById("latency");
@@ -546,11 +582,15 @@ INDEX_HTML = """<!doctype html>
       function setStatus(data) {
         const label = data.label || "UNKNOWN";
         const reason = data.reason || "--";
+        const isStale = Boolean(data.stale);
         badge.textContent = label;
         badge.className = "status-pill " + label;
         statusEl.textContent = label;
         reasonEl.textContent = reason.replace("_", " ");
-        detailEl.textContent = data.detail || data.result || "Waiting...";
+        const detail = data.detail || data.result || "Waiting...";
+        detailEl.textContent = isStale ? `${detail} (stale)` : detail;
+        freshnessEl.textContent = isStale ? "Stale" : "Live";
+        freshnessEl.className = "value " + (isStale ? "stale" : "live");
         if (data.elapsed) {
           latencyEl.textContent = Math.round(data.elapsed * 1000) + "ms";
         } else {

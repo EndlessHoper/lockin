@@ -1,4 +1,4 @@
-# CodexVision Demo Spec
+# Demo Spec
 
 ## Goal
 Browser-based focus detection using webcam.
