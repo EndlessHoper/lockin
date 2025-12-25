@@ -12,10 +12,7 @@
 
 **Demo concept:**
 - Show local VLM describing what it sees in real-time
-- Inspired by someone else's demo that had much faster inference
 - The "wow factor": small models (500M params) running locally can now see and understand
-
-**Current blocker:** Inference too slow to be impressive (was using non-quantized BF16 model)
 
 **Article angles:**
 - Just got a MacBook Pro M5 - perfect hook for "MLX on Apple Silicon" angle
@@ -24,56 +21,60 @@
 
 ---
 
-## File Guide
+## File Structure
 
-| File | Purpose |
-|------|---------|
-| `focus.py` | Testing distraction detector (Together AI) |
-| `gemmafocus.py` | Testing distraction detector (LM Studio) |
-| `whatyousee.py` | Model describes what it sees (LM Studio) |
-| `localwhatyousee.py` | Model describes what it sees (local MLX) |
-| `server.py` | Main backend with local MLX inference |
+```
+detector/           # Current demo code
+├── terminal_capture.py   # CLI webcam demo (press SPACE to capture)
+├── server.py             # Browser-based focus detector
+└── requirements.txt
 
----
-
-## Inference Speed Investigation
-
-**Issue found:** `localwhatyousee.py` has `MAX_SIDE = 0` (no image resizing)
-
-Compare:
-- `server.py`: MAX_SIDE = 384 (resizes to max 384px)
-- `localwhatyousee.py`: MAX_SIDE = 0 (full resolution!)
-
-A 1080p webcam frame is ~25x more pixels than a 384px resized version. Vision transformers scale roughly quadratically with attention, so this could be a major factor.
-
-**Other optimization ideas to try:**
-- Set MAX_SIDE to 384 or 512
-- Try the 256M model instead of 500M
-- Reduce MAX_TOKENS further (32 vs 64)
-- Check if mlx_vlm is using the GPU properly
-
----
-
-## Old Notes
-
-> ok. can you rewrite it to use together ai's hosted gemma model as per the code example below.
-
-```python
-from together import Together
-
-client = Together()
-
-response = client.chat.completions.create(
-    model="google/gemma-3n-E4B-it",
-    messages=[
-      {
-        "role": "user",
-        "content": "What are some fun things to do in New York?"
-      }
-    ]
-)
-print(response.choices[0].message.content)
+archive/            # Old experiments (moved)
+├── focus.py, gemmafocus.py, etc.
 ```
 
-key is tgp_v1_kLnGH6eAJ9TWVttIv54R5rHBwfZMuIT1D3qx_us97yg
-i want you to hardcode it. there is no risk. its my code. its not going anywehre.
+---
+
+## Models Tested
+
+| Model | Quantization | Speed | Notes |
+|-------|--------------|-------|-------|
+| SmolVLM2-500M-Video-Instruct-mlx | BF16 | Slow | Original, non-quantized |
+| SmolVLM2-500M-Video-Instruct-mlx-8bit-skip-vision | 8-bit | Fast (~1.2s) | Current default |
+| EZCon/SmolVLM2-2.2B-Instruct-4bit-mlx | 4-bit | TBD | Larger model, might be better quality |
+
+---
+
+## Learnings / Gotchas
+
+### Image orientation matters!
+- Webcam display is mirrored (feels natural like a mirror)
+- BUT don't send mirrored image to model - text becomes unreadable
+- Solution: flip for display only, send original to model
+
+### mlx_vlm returns GenerationResult object
+- Don't use `str(response)` - gives object dump
+- Use `response.text` to get actual generated text
+
+### Small models don't follow complex prompts
+- Structured output (YES/NO format) doesn't work well
+- Better to ask simple questions and parse natural language response
+- "Describe this image" works better than "Answer YES or NO to these 3 questions"
+
+### Image size affects speed dramatically
+- Full 1080p webcam = very slow
+- Resize to 384px = much faster
+- Vision transformers scale quadratically with image size
+
+### Browser demo vs Python:
+- Browser WebGPU + Q4 can be faster than Python MLX with BF16
+- Quantization matters more than framework choice
+
+---
+
+## TODO
+
+- [ ] Test the 2.2B 4-bit model for quality comparison
+- [ ] Record demo video for article
+- [ ] Write article draft
+- [ ] Consider: continuous mode vs manual capture for demo
