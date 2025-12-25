@@ -36,15 +36,8 @@ MAX_TOKENS = 48
 TEMPERATURE = 0.0
 MAX_IMAGE_SIZE = 384
 
-# Detection prompt - asks model to identify focus signals
-PROMPT = """Look at this webcam image of a person at their computer.
-
-Answer these questions with YES or NO only:
-1. Is there a person visible?
-2. Are they looking at the camera/screen?
-3. Is a phone visible in the image?
-
-Format: person_visible, looking_at_screen, phone_visible"""
+# Simple prompt - let model describe naturally, we parse the output
+PROMPT = "Describe this webcam image in one short sentence. Is there a person? Are they looking at the screen? Is a phone visible?"
 
 # Global state
 model = None
@@ -88,22 +81,40 @@ def parse_response(text: str) -> dict:
     """Parse model response into structured signals."""
     text_lower = text.lower()
 
-    # Try to extract yes/no signals
-    person_visible = "yes" in text_lower.split("person")[0][-20:] if "person" in text_lower else "yes" in text_lower[:50]
-    looking = "looking" in text_lower and "yes" in text_lower
-    phone = "phone" in text_lower and ("yes" in text_lower or "visible" in text_lower)
+    # Default: assume person is present and looking (optimistic)
+    person_visible = True
+    looking = True
+    phone = False
 
-    # Simple heuristic fallback
-    if "no person" in text_lower or "no one" in text_lower or "empty" in text_lower:
+    # Check for no person
+    no_person_phrases = ["no person", "no one", "nobody", "empty", "can't see anyone", "don't see"]
+    for phrase in no_person_phrases:
+        if phrase in text_lower:
+            person_visible = False
+            break
+
+    # Check for person indicators
+    person_phrases = ["person", "man", "woman", "someone", "individual", "face", "they", "looking"]
+    if not any(phrase in text_lower for phrase in person_phrases):
         person_visible = False
-    if "not looking" in text_lower or "looking away" in text_lower:
-        looking = False
-    if "phone" in text_lower and "no" not in text_lower.split("phone")[0][-10:]:
-        phone = True
+
+    # Check for not looking
+    not_looking_phrases = ["not looking", "looking away", "turned away", "side", "down", "distracted"]
+    for phrase in not_looking_phrases:
+        if phrase in text_lower:
+            looking = False
+            break
+
+    # Check for phone
+    phone_phrases = ["phone", "mobile", "cellphone", "smartphone", "device in hand"]
+    for phrase in phone_phrases:
+        if phrase in text_lower:
+            phone = True
+            break
 
     return {
         "person_visible": person_visible,
-        "looking_at_screen": looking or person_visible,  # Default to looking if person visible
+        "looking_at_screen": looking,
         "phone_visible": phone,
     }
 
@@ -132,7 +143,11 @@ def analyze_image(image: Image.Image) -> dict:
     )
     elapsed = time.time() - start
 
-    raw = str(response).strip()
+    # Extract text from GenerationResult object
+    if hasattr(response, 'text'):
+        raw = response.text.strip()
+    else:
+        raw = str(response).strip()
     signals = parse_response(raw)
     status, reason = determine_status(signals)
 
@@ -433,8 +448,7 @@ HTML_PAGE = """<!DOCTYPE html>
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             const ctx = canvas.getContext('2d');
-            ctx.translate(canvas.width, 0);
-            ctx.scale(-1, 1);
+            // Don't flip - send original orientation to model so text is readable
             ctx.drawImage(video, 0, 0);
 
             try {

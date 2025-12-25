@@ -78,8 +78,13 @@ def describe_image(model, processor, config, image: Image.Image) -> tuple[str, f
     )
     elapsed = time.time() - start
 
-    # Clean up response
-    text = str(response).strip()
+    # Extract text from GenerationResult object
+    if hasattr(response, 'text'):
+        text = response.text.strip()
+    else:
+        text = str(response).strip()
+
+    # Clean up - take first line only
     if "\n" in text:
         text = text.split("\n")[0]
 
@@ -113,11 +118,8 @@ def main():
             if not ret:
                 break
 
-            # Mirror the frame for natural feel
-            frame = cv2.flip(frame, 1)
-
-            # Create display frame with overlay (keep clean frame for model)
-            display_frame = frame.copy()
+            # Mirror for display only (so it feels like a mirror)
+            display_frame = cv2.flip(frame, 1)
             cv2.putText(
                 display_frame, "SPACE: Capture | Q: Quit",
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
@@ -130,7 +132,7 @@ def main():
             if key == ord('q'):
                 break
             elif key == ord(' '):
-                # Capture and analyze (use clean frame without overlay)
+                # Capture and analyze (use ORIGINAL unflipped frame for model)
                 print("Capturing...")
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
