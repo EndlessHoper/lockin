@@ -14,6 +14,8 @@ Usage:
 
 import base64
 import io
+import logging
+import re
 import threading
 import time
 import webbrowser
@@ -27,17 +29,31 @@ from mlx_vlm import generate, load
 from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.utils import load_config
 
-# Model options
-MODEL = "mlx-community/SmolVLM2-500M-Video-Instruct-mlx-8bit-skip-vision"
-# MODEL = "EZCon/SmolVLM2-2.2B-Instruct-4bit-mlx"
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("focus")
+
+# Model options - smaller = faster, larger = better instruction following
+MODEL = "mlx-community/Qwen2-VL-2B-Instruct-4bit"  # 2B, 4-bit - good balance
+# MODEL = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"  # 3B, 4-bit - newer
+# MODEL = "mlx-community/Phi-3.5-vision-instruct-4bit"  # alternative
+# MODEL = "mlx-community/SmolVLM2-500M-Video-Instruct-mlx-8bit-skip-vision"  # smallest
 
 # Settings
-MAX_TOKENS = 48
+MAX_TOKENS = 32
 TEMPERATURE = 0.0
 MAX_IMAGE_SIZE = 384
 
-# Simple prompt - let model describe naturally, we parse the output
-PROMPT = "Describe this webcam image in one short sentence. Is there a person? Are they looking at the screen? Is a phone visible?"
+# Prompt asking for structured output
+PROMPT = """Look at this webcam image. Is the person focused on their computer or distracted?
+
+Reply with exactly: STATUS: FOCUSED or DISTRACTED, REASON: <reason>
+
+Where reason is one of: attentive, phone, not_looking, no_person"""
 
 # Global state
 model = None
@@ -54,11 +70,11 @@ class ImageRequest(BaseModel):
 def init_model():
     """Load the vision model."""
     global model, processor, config
-    print(f"Loading model: {MODEL}")
+    logger.info(f"Loading model: {MODEL}")
     start = time.time()
     config = load_config(MODEL)
     model, processor = load(MODEL)
-    print(f"Model loaded in {time.time() - start:.1f}s")
+    logger.info(f"Model loaded in {time.time() - start:.1f}s")
 
 
 def resize_image(image: Image.Image, max_side: int) -> Image.Image:
@@ -77,57 +93,41 @@ def decode_image(data_url: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(data_url))).convert("RGB")
 
 
-def parse_response(text: str) -> dict:
-    """Parse model response into structured signals."""
+VALID_STATUSES = {"FOCUSED", "DISTRACTED"}
+VALID_REASONS = {"attentive", "phone", "not_looking", "no_person"}
+
+
+def parse_response(text: str) -> tuple[str, str]:
+    """Parse model response to extract STATUS and REASON."""
+    text_upper = text.upper()
     text_lower = text.lower()
 
-    # Default: assume person is present and looking (optimistic)
-    person_visible = True
-    looking = True
-    phone = False
+    # Try to extract STATUS
+    status = "FOCUSED"  # default
+    if "DISTRACTED" in text_upper:
+        status = "DISTRACTED"
+    elif "FOCUSED" in text_upper:
+        status = "FOCUSED"
 
-    # Check for no person
-    no_person_phrases = ["no person", "no one", "nobody", "empty", "can't see anyone", "don't see"]
-    for phrase in no_person_phrases:
-        if phrase in text_lower:
-            person_visible = False
+    # Try to extract REASON
+    reason = "attentive"  # default
+    for valid_reason in VALID_REASONS:
+        if valid_reason in text_lower:
+            reason = valid_reason
             break
 
-    # Check for person indicators
-    person_phrases = ["person", "man", "woman", "someone", "individual", "face", "they", "looking"]
-    if not any(phrase in text_lower for phrase in person_phrases):
-        person_visible = False
+    # Fallback heuristics if model didn't use exact keywords
+    if "phone" in text_lower:
+        reason = "phone"
+        status = "DISTRACTED"
+    elif "no person" in text_lower or "nobody" in text_lower or "empty" in text_lower:
+        reason = "no_person"
+        status = "DISTRACTED"
+    elif "not looking" in text_lower or "looking away" in text_lower:
+        reason = "not_looking"
+        status = "DISTRACTED"
 
-    # Check for not looking
-    not_looking_phrases = ["not looking", "looking away", "turned away", "side", "down", "distracted"]
-    for phrase in not_looking_phrases:
-        if phrase in text_lower:
-            looking = False
-            break
-
-    # Check for phone
-    phone_phrases = ["phone", "mobile", "cellphone", "smartphone", "device in hand"]
-    for phrase in phone_phrases:
-        if phrase in text_lower:
-            phone = True
-            break
-
-    return {
-        "person_visible": person_visible,
-        "looking_at_screen": looking,
-        "phone_visible": phone,
-    }
-
-
-def determine_status(signals: dict) -> tuple[str, str]:
-    """Determine FOCUSED/DISTRACTED status from signals."""
-    if not signals["person_visible"]:
-        return "DISTRACTED", "no_person"
-    if signals["phone_visible"]:
-        return "DISTRACTED", "phone"
-    if not signals["looking_at_screen"]:
-        return "DISTRACTED", "not_looking"
-    return "FOCUSED", "attentive"
+    return status, reason
 
 
 def analyze_image(image: Image.Image) -> dict:
@@ -148,13 +148,14 @@ def analyze_image(image: Image.Image) -> dict:
         raw = response.text.strip()
     else:
         raw = str(response).strip()
-    signals = parse_response(raw)
-    status, reason = determine_status(signals)
+
+    status, reason = parse_response(raw)
+
+    logger.info(f"[{elapsed:.2f}s] {status} ({reason}) | {raw[:80]}")
 
     return {
         "status": status,
         "reason": reason,
-        "signals": signals,
         "elapsed": round(elapsed, 2),
         "raw": raw,
     }
